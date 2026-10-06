@@ -127,10 +127,11 @@ def try_repair_truncated_json(text: str) -> Optional[Dict[str, Any]]:
 
 class LLMService:
     def __init__(self):
-        self.api_key = os.getenv("LLM_API_KEY", API_KEY)
-        self.model = os.getenv("LLM_MODEL", MODEL_NAME)
+        raw_key = os.getenv("LLM_API_KEY", API_KEY) or ""
+        self.api_key = raw_key.strip().strip('"').strip("'")
+        self.model = (os.getenv("LLM_MODEL", MODEL_NAME) or "openai/gpt-oss-120b").strip().strip('"').strip("'")
         self.current_model = self.model
-        self.base_url = os.getenv("LLM_BASE_URL", BASE_URL)
+        self.base_url = (os.getenv("LLM_BASE_URL", BASE_URL) or "https://api.groq.com/openai/v1").strip().strip('"').strip("'")
         
         self.client: Optional[OpenAI] = None
         if self.api_key and self.api_key != "your_api_key_here":
@@ -143,8 +144,21 @@ class LLMService:
         else:
             logger.warning("LLMService: No valid LLM_API_KEY detected. Running in Demo / Fallback mode.")
 
+    def get_client(self) -> Optional[OpenAI]:
+        current_env_key = (os.getenv("LLM_API_KEY", "") or "").strip().strip('"').strip("'")
+        if current_env_key and current_env_key != "your_api_key_here" and current_env_key != self.api_key:
+            self.api_key = current_env_key
+            self.client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                default_headers={"User-Agent": "Mozilla/5.0"}
+            )
+            logger.info("LLMService dynamically refreshed API key from environment.")
+        return self.client
+
     def is_available(self) -> bool:
-        return self.client is not None and bool(self.api_key)
+        client = self.get_client()
+        return client is not None and bool(self.api_key)
 
     def _clean_json_string(self, text: str) -> str:
         """Strip markdown fences and whitespace from LLM response"""
@@ -194,7 +208,10 @@ class LLMService:
                 if enforce_json_format:
                     kwargs["response_format"] = {"type": "json_object"}
 
-                response = self.client.chat.completions.create(**kwargs)
+                client = self.get_client()
+                if not client:
+                    raise RuntimeError("No valid API key or OpenAI client initialized.")
+                response = client.chat.completions.create(**kwargs)
                 
                 raw_content = response.choices[0].message.content or "{}"
                 cleaned = self._clean_json_string(raw_content)
